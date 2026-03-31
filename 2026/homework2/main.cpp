@@ -40,10 +40,21 @@ public:
     std::vector<int>* acquire_buffer(size_t capacity) {
         std::vector<int>* vec_ptr = nullptr;
 
-        // --- TODO: YOUR CODE HERE ---
-        // 1. Load head. 2. CAS loop. 3. Handle empty case.
+        while (true) {
+            PoolNode* old_head = head.load();
+            if (old_head == nullptr) {
+                break;
+            }
 
-        // ----------------------
+            PoolNode* next = old_head->next;
+            if (head.compare_exchange_weak(
+                    old_head,
+                    next)) {
+                vec_ptr = old_head->data;
+                delete old_head;
+                break;
+            }
+        }
 
         // Fallback: If pool empty, allocate fresh
         if (vec_ptr == nullptr) {
@@ -58,10 +69,16 @@ public:
 
     // TODO: Implement Lock-Free Push using CAS loop
     void release_buffer(std::vector<int>* buf) {
-        // --- TODO: YOUR CODE HERE ---
-        // 1. Create node. 2. CAS loop to push to head.
-
-        // ----------------------
+        PoolNode* node = new PoolNode{buf, nullptr};
+        while (true) {
+            PoolNode* old_head = head.load();
+            node->next = old_head;
+            if (head.compare_exchange_weak(
+                    old_head,
+                    node)) {
+                return;
+            }
+        }
     }
 };
 
@@ -78,19 +95,40 @@ void seq_merge(int* A, int nA, int* B, int nB, int* C) {
 // TODO: Implement the Divide-and-Conquer Parallel Merge
 // Follow the algorithm described in the assignment PDF.
 void parallel_binary_merge(int* A, int nA, int* B, int nB, int* C) {
-    // 1. Base Case (use seq_merge)
+    if (nA + nB <= SERIAL_THRESHOLD) {
+        seq_merge(A, nA, B, nB, C);
+        return;
+    }
 
-    // 2. Ensure A is larger (Swap if needed)
+    if (nA < nB) {
+        parallel_binary_merge(B, nB, A, nA, C);
+        return;
+    }
 
-    // 3. Find Median of A
+    if (nA == 0) {
+        return;
+    }
 
-    // 4. Binary Search Median in B
+    int midA = nA / 2;
+    int pivot = A[midA];
+    int midB = static_cast<int>(std::lower_bound(B, B + nB, pivot) - B);
+    int midC = midA + midB;
 
-    // 5. Place Median in C
+    C[midC] = pivot;
 
-    // 6. Spawn 2 Recursive Tasks (Left and Right)
+    #pragma omp task shared(A, B, C)
+    {
+        parallel_binary_merge(A, midA, B, midB, C);
+    }
 
-    // 7. Wait
+    #pragma omp task shared(A, B, C)
+    {
+        parallel_binary_merge(A + midA + 1, nA - midA - 1,
+                              B + midB, nB - midB,
+                              C + midC + 1);
+    }
+
+   #pragma omp taskwait
 }
 
 // ============================================================
@@ -116,9 +154,23 @@ void mergesort_4way(int* arr, int n) {
     // TODO: Spawn 4 Parallel Tasks to sort p1, p2, p3, p4
     // Use #pragma omp task
 
-    // --- TODO: YOUR CODE HERE ---
-
-    // ----------------------
+    #pragma omp task shared(p1)
+    {
+        mergesort_4way(p1, s1);
+    }
+    #pragma omp task shared(p2)
+    {
+        mergesort_4way(p2, s2);
+    }
+    #pragma omp task shared(p3)
+    {
+        mergesort_4way(p3, s3);
+    }
+    #pragma omp task shared(p4)
+    {
+        mergesort_4way(p4, s4);
+    }
+    #pragma omp taskwait
 
     // 2. Acquire Buffer
     std::vector<int>* temp_vec = pool.acquire_buffer(n);
@@ -130,9 +182,17 @@ void mergesort_4way(int* arr, int n) {
     // Merge (Q3+Q4) -> Right Half of T
     // TODO: Launch in parallel tasks calling parallel_binary_merge
 
-    // --- TODO: YOUR CODE HERE ---
+    #pragma omp task shared(T)
+    {
+        parallel_binary_merge(p1, s1, p2, s2, T);
+    }
 
-    // ----------------------
+    #pragma omp task shared(T_mid)
+    {
+        parallel_binary_merge(p3, s3, p4, s4, T_mid);
+    }
+
+    #pragma omp taskwait
 
     // 4. Final Merge: Left+Right -> Original Array
     parallel_binary_merge(T, s1 + s2, T_mid, s3 + s4, arr);
